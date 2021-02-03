@@ -6,8 +6,11 @@ https://arxiv.org/abs/2010.05222
 """
 
 import argparse
+import math
 import time
 
+import cv2
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -22,6 +25,13 @@ from partial_classifier import DistSampleClassifier
 from sgd import SGD
 
 torch.backends.cudnn.benchmark = True
+
+def image_preprocessing(img):
+    img = img - 127.5
+    img = img * 0.0078125
+    img = img.astype(np.float32)
+
+    return img
 
 
 class MarginSoftmax(nn.Module):
@@ -60,27 +70,61 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
+def cosine_dist(v1, v2):
+    dot = np.sum(np.multiply(np.asarray(v1), np.asarray(v2)), axis=1)
+    norm = np.linalg.norm(v1, axis=1) * np.linalg.norm(
+        v2, axis=1
+    )
+    similarity = dot / norm
+    distance = np.arccos(similarity) / math.pi
+
+    return distance
+
+
 # .......
 def main(local_rank):
-    dist.init_process_group(backend='nccl', init_method='env://')
     cfg.local_rank = local_rank
-    torch.cuda.set_device(local_rank)
-    cfg.rank = dist.get_rank()
-    cfg.world_size = dist.get_world_size()
-    trainset = MXFaceDataset(root_dir=cfg.rec, local_rank=local_rank)
-    train_sampler = torch.utils.data.distributed.DistributedSampler(
-        trainset, shuffle=True)
-    train_loader = DataLoaderX(local_rank=local_rank,
-                               dataset=trainset,
-                               batch_size=cfg.batch_size,
-                               sampler=train_sampler,
-                               num_workers=0,
-                               pin_memory=True,
-                               drop_last=False)
+    # cfg.rank = dist.get_rank()
+    # cfg.world_size = dist.get_world_size()
 
-    backbone = backbones.iresnet100(False).to(local_rank)
-    backbone.train()
+    backbone = backbones.iresnet50(False)
 
+    weights = torch.load("pytorch/partial_fc_glint360k_r50/16backbone.pth", map_location=torch.device('cpu'))
+    backbone.load_state_dict(weights)
+    backbone = backbone.float()
+    backbone = backbone.eval()
+
+    # embedding 512
+
+    img1 = cv2.imread('boy_1.jpg')
+    img1 = cv2.cvtColor(img1, cv2.COLOR_BGR2RGB)
+    img1 = image_preprocessing(img1)
+    img1 = np.ones([112,112,3],dtype=np.float32)
+    img1 = img1.transpose([2, 0, 1])
+    img1 = np.expand_dims(img1, axis=0)
+    img1 = torch.from_numpy(img1).float()
+    img1 = torch.autograd.Variable(img1, requires_grad=False).to('cpu')
+
+    img2 = cv2.imread('man_2.jpg')
+    img2 = cv2.cvtColor(img2, cv2.COLOR_BGR2RGB)
+    img2 = image_preprocessing(img2)
+    img2 = img2.transpose([2, 0, 1])
+    img2 = np.expand_dims(img2, axis=0)
+    img2 = torch.from_numpy(img2).float()
+    img2 = torch.autograd.Variable(img2, requires_grad=False).to('cpu')
+    with torch.no_grad():
+        v1 = backbone.forward(img1)
+        v2 = backbone.forward(img2)
+
+    v1 = np.asarray(v1)
+    import pickle
+    pickle.dump(v1, open("sample.pkl", "wb"))
+    print(v1)
+
+    result = cosine_dist(v1, v2)
+    print(result)
+
+    exit(0)
     # Broadcast init parameters
     for ps in backbone.parameters():
         dist.broadcast(ps, 0)

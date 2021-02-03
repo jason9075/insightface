@@ -99,3 +99,7 @@ ENV/
 
 # mypy
 .mypy_cache/
+.idea/**
+recognition/partial_fc/pytorch/dataset/**
+recognition/partial_fc/pytorch/imgs/**
+recognition/partial_fc/pytorch/saved_model/**
